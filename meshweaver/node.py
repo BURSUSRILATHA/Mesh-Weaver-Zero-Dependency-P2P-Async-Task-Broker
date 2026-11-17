@@ -4,7 +4,7 @@ from meshweaver.protocol import Message
 message = Message(
     type="PING",
     msg_id="MSG001",
-    sender_id="NODE002",
+    sender_id="NODE001",
     payload={"text": "Hello MeshWeaver"}
 )
 
