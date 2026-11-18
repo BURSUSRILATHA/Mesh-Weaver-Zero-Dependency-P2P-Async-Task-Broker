@@ -1,5 +1,4 @@
-
-from meshweaver.protocol import Message
+from meshweaver.protocol import Message, generate_message_id
 
 
 class Node:
@@ -19,10 +18,12 @@ class Node:
 
         message = Message(
             type="PING",
-            msg_id="MSG001",
+            msg_id=generate_message_id(),
             sender_id=self.node_id,
             payload={"receiver": other_node.node_id}
         )
+
+        print("PING Message ID:", message.msg_id)
 
         response = other_node.dispatch_message(message)
 
@@ -41,15 +42,18 @@ class Node:
             print("Unknown message type:", message.type)
             return None
 
+    
     def handle_ping(self, message):
         print(f"{self.node_id} received PING from {message.sender_id}")
 
         response = Message(
             type="PONG",
-            msg_id="MSG002",
+            msg_id=generate_message_id(),
             sender_id=self.node_id,
             payload={"reply_to": message.sender_id}
         )
+
+        print("PONG Message ID:", response.msg_id)
 
         return response
 
@@ -63,14 +67,12 @@ node1 = Node("NODE001")
 node2 = Node("NODE002")
 
 
-
 node1.send_ping(node2)
-
 
 
 unknown_message = Message(
     type="HELLO",
-    msg_id="MSG003",
+    msg_id=generate_message_id(),
     sender_id="NODE002",
     payload={}
 )

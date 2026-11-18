@@ -1,6 +1,10 @@
-
 from dataclasses import dataclass
 from typing import Any, Dict
+import uuid
+
+
+def generate_message_id():
+    return str(uuid.uuid4())
 
 
 @dataclass
