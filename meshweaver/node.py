@@ -6,14 +6,34 @@ class Node:
     def __init__(self, node_id):
         self.node_id = node_id
 
-        
         self.handlers = {
             "PING": self.handle_ping,
             "PONG": self.handle_pong
         }
 
     
+    def validate_message(self, message):
+
+        if not isinstance(message, Message):
+            return False, "Invalid message object"
+
+        if not isinstance(message.type, str) or not message.type.strip():
+            return False, "Message type is missing"
+
+        if not isinstance(message.msg_id, str) or not message.msg_id.strip():
+            return False, "Message ID is missing"
+
+        if not isinstance(message.sender_id, str) or not message.sender_id.strip():
+            return False, "Sender ID is missing"
+
+        if not isinstance(message.payload, dict):
+            return False, "Payload must be a dictionary"
+
+        return True, "Message is valid"
+
+    
     def send_ping(self, other_node):
+
         print(f"\n{self.node_id} is sending PING to {other_node.node_id}")
 
         message = Message(
@@ -32,7 +52,17 @@ class Node:
 
     
     def dispatch_message(self, message):
-        print(f"\n{self.node_id} dispatching {message.type} message")
+
+        print(f"\n{self.node_id} dispatching message")
+
+        
+        is_valid, result = self.validate_message(message)
+
+        if not is_valid:
+            print("Invalid message:", result)
+            return None
+
+        print("Message validation:", result)
 
         handler = self.handlers.get(message.type)
 
@@ -44,6 +74,7 @@ class Node:
 
     
     def handle_ping(self, message):
+
         print(f"{self.node_id} received PING from {message.sender_id}")
 
         response = Message(
@@ -59,6 +90,7 @@ class Node:
 
     
     def handle_pong(self, message):
+
         print(f"{self.node_id} received PONG from {message.sender_id}")
 
 
@@ -78,3 +110,13 @@ unknown_message = Message(
 )
 
 node1.dispatch_message(unknown_message)
+
+
+invalid_message = Message(
+    type="PING",
+    msg_id="",
+    sender_id="NODE002",
+    payload={}
+)
+
+node1.dispatch_message(invalid_message)
