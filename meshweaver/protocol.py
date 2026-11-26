@@ -1,55 +1,47 @@
 
-from dataclasses import dataclass
-from typing import Any, Dict
-import uuid
 import json
+import uuid
 
 
-def generate_message_id():
-    return str(uuid.uuid4())
+def create_message(message_type, sender, receiver, payload):
+    """Create a standard MeshWeaver message."""
 
-
-@dataclass
-class Message:
-    type: str
-    msg_id: str
-    sender_id: str
-    payload: Dict[str, Any]
-
-
-# Convert a message into JSON
-def message_to_json(message):
-
-    message_data = {
-        "type": message.type,
-        "msg_id": message.msg_id,
-        "sender_id": message.sender_id,
-        "payload": message.payload
+    message = {
+        "message_id": str(uuid.uuid4()),
+        "type": message_type,
+        "sender": sender,
+        "receiver": receiver,
+        "payload": payload
     }
 
-    return json.dumps(message_data)
+    return message
 
 
-# Convert JSON back into a message
-def message_from_json(json_data):
+def encode_message(message):
+    """Convert a message dictionary into JSON bytes."""
 
-    data = json.loads(json_data)
+    return json.dumps(message).encode("utf-8")
 
-    if not isinstance(data, dict):
-        raise ValueError("Message data must be a JSON object")
 
-    required_fields = ["type", "msg_id", "sender_id", "payload"]
+def decode_message(data):
+    """Convert JSON bytes into a Python dictionary."""
 
-    for field in required_fields:
-        if field not in data:
-            raise ValueError(f"Missing field: {field}")
+    try:
+        message = json.loads(data.decode("utf-8"))
 
-    if not isinstance(data["payload"], dict):
-        raise ValueError("Payload must be a dictionary")
+        required_fields = [
+            "message_id",
+            "type",
+            "sender",
+            "receiver",
+            "payload"
+        ]
 
-    return Message(
-        type=data["type"],
-        msg_id=data["msg_id"],
-        sender_id=data["sender_id"],
-        payload=data["payload"]
-    )
+        for field in required_fields:
+            if field not in message:
+                raise ValueError(f"Missing field: {field}")
+
+        return message
+
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise ValueError("Invalid message format") from error
