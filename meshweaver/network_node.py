@@ -24,21 +24,39 @@ async def process_message(message):
     print(f"[Node 1] Message type: {message_type}")
 
     if message_type == "TASK":
+
         print(f"[Node 1] Processing task: {payload}")
 
         await asyncio.sleep(1)
 
         print(f"[Node 1] Task completed: {payload}")
 
+        return create_message(
+            "TASK_COMPLETED",
+            "MeshWeaver-Node-1",
+            sender,
+            f"{payload} completed successfully"
+        )
+
     elif message_type == "PING":
+
         print("[Node 1] PING received")
+
+        return create_message(
+            "PONG",
+            "MeshWeaver-Node-1",
+            sender,
+            "Connection is active"
+        )
 
     else:
         print(f"[Node 1] Unknown message: {message_type}")
 
+        return None
+
 
 async def handle_client(reader, writer):
-    """Receive messages from a connected node."""
+    """Receive messages and send responses."""
 
     address = writer.get_extra_info("peername")
 
@@ -46,6 +64,7 @@ async def handle_client(reader, writer):
 
     try:
         while True:
+
             data = await reader.readline()
 
             if not data:
@@ -53,14 +72,27 @@ async def handle_client(reader, writer):
 
             try:
                 message = decode_message(data.strip())
-                await process_message(message)
+
+                response = await process_message(message)
+
+                if response:
+
+                    encoded_response = encode_message(response)
+
+                    writer.write(encoded_response + b"\n")
+
+                    await writer.drain()
+
+                    print("[Node 1] Response sent successfully")
 
             except ValueError as error:
                 print(f"[Node 1] Invalid message: {error}")
 
     finally:
         print("[Node 1] Node disconnected")
+
         writer.close()
+
         await writer.wait_closed()
 
 
@@ -93,6 +125,7 @@ async def start_client():
     print("[Node 2] Connected successfully!")
 
     try:
+
         messages = [
             ("TASK", "Task Request 1"),
             ("TASK", "Task Request 2"),
@@ -111,42 +144,70 @@ async def start_client():
             encoded_message = encode_message(message)
 
             writer.write(encoded_message + b"\n")
+
             await writer.drain()
 
-            print(f"[Node 2] Message sent: {message_type}")
+            print(f"\n[Node 2] Message sent: {message_type}")
+
+            response_data = await reader.readline()
+
+            if not response_data:
+                print("[Node 2] Server disconnected.")
+                break
+
+            response = decode_message(response_data.strip())
+
+            print(
+                f"[Node 2] Response received: "
+                f"{response['type']}"
+            )
+
+            print(
+                f"[Node 2] Response message: "
+                f"{response['payload']}"
+            )
 
     finally:
+
         writer.close()
+
         await writer.wait_closed()
 
-    print("[Node 2] Communication completed!")
+    print("\n[Node 2] Communication completed!")
 
 
 async def main():
 
     if len(sys.argv) < 2:
+
         print("Usage:")
         print("python -m meshweaver.network_node server")
         print("python -m meshweaver.network_node client")
+
         return
 
     role = sys.argv[1].lower()
 
     if role == "server":
+
         await start_server()
 
     elif role == "client":
+
         await start_client()
 
     else:
+
         print("Invalid role. Choose server or client.")
 
 
 if __name__ == "__main__":
+
     try:
         asyncio.run(main())
 
     except ConnectionRefusedError:
         print("[Error] Server is not running. Start Node 1 first.")
+
     except KeyboardInterrupt:
         print("\nMeshWeaver stopped.")
