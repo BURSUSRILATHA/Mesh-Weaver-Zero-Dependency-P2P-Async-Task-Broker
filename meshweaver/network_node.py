@@ -8,41 +8,53 @@ from meshweaver.protocol import (
     decode_message
 )
 
-
 HOST = "127.0.0.1"
 PORT = 8888
 
+# Shared task queue
 task_queue = asyncio.Queue()
 
+# Number of workers
+NUM_WORKERS = 3
 
+
+# Process an individual task
 async def process_task(message):
-    """Process one task from the queue."""
-
     sender = message["sender"]
     payload = message["payload"]
 
     print(f"\n[Worker] Processing task: {payload}")
 
-    await asyncio.sleep(2)
+    # Simulate task processing
+    await asyncio.sleep(3)
 
     print(f"[Worker] Task completed: {payload}")
 
-    return create_message(
+    response = create_message(
         "TASK_COMPLETED",
         "MeshWeaver-Node-1",
         sender,
         f"{payload} completed successfully"
     )
 
+    return response
 
-async def task_worker():
-    """Take tasks from the queue and process them."""
+
+# Multiple asynchronous workers
+async def task_worker(worker_id):
+
+    print(f"[Worker {worker_id}] Worker started!")
 
     while True:
 
         message, writer = await task_queue.get()
 
         try:
+            print(
+                f"\n[Worker {worker_id}] "
+                f"Picked up task: {message['payload']}"
+            )
+
             response = await process_task(message)
 
             encoded_response = encode_message(response)
@@ -51,23 +63,31 @@ async def task_worker():
 
             await writer.drain()
 
-            print("[Worker] Completion response sent!")
+            print(
+                f"[Worker {worker_id}] "
+                "Completion response sent!"
+            )
 
         except (ConnectionError, OSError) as error:
-            print(f"[Worker] Could not send response: {error}")
+
+            print(
+                f"[Worker {worker_id}] "
+                f"Could not send response: {error}"
+            )
 
         finally:
             task_queue.task_done()
 
 
+# Handle incoming client connections
 async def handle_client(reader, writer):
-    """Receive messages from connected nodes."""
 
     address = writer.get_extra_info("peername")
 
     print(f"\n[Node 1] Node connected: {address}")
 
     try:
+
         while True:
 
             data = await reader.readline()
@@ -76,10 +96,12 @@ async def handle_client(reader, writer):
                 break
 
             try:
+
                 message = decode_message(data.strip())
 
                 message_type = message["type"]
 
+                # Add task to shared queue
                 if message_type == "TASK":
 
                     await task_queue.put((message, writer))
@@ -89,6 +111,7 @@ async def handle_client(reader, writer):
                         f"{message['payload']}"
                     )
 
+                # Respond to PING
                 elif message_type == "PING":
 
                     response = create_message(
@@ -98,22 +121,27 @@ async def handle_client(reader, writer):
                         "Connection is active"
                     )
 
-                    writer.write(encode_message(response) + b"\n")
+                    writer.write(
+                        encode_message(response) + b"\n"
+                    )
 
                     await writer.drain()
 
                     print("[Node 1] PONG response sent!")
 
                 else:
+
                     print(
                         f"[Node 1] Unknown message type: "
                         f"{message_type}"
                     )
 
             except ValueError as error:
+
                 print(f"[Node 1] Invalid message: {error}")
 
     finally:
+
         print("[Node 1] Node disconnected")
 
         writer.close()
@@ -121,10 +149,18 @@ async def handle_client(reader, writer):
         await writer.wait_closed()
 
 
+# Start the server and three workers
 async def start_server():
-    """Start Node 1 as a TCP server."""
 
-    worker = asyncio.create_task(task_worker())
+    workers = []
+
+    for worker_id in range(1, NUM_WORKERS + 1):
+
+        worker = asyncio.create_task(
+            task_worker(worker_id)
+        )
+
+        workers.append(worker)
 
     server = await asyncio.start_server(
         handle_client,
@@ -132,25 +168,33 @@ async def start_server():
         PORT
     )
 
-    print("[Node 1] MeshWeaver server started!")
+    print("\n[Node 1] MeshWeaver server started!")
+
     print(f"[Node 1] Listening on {HOST}:{PORT}")
-    print("[Node 1] Task queue worker started!")
+
+    print(
+        f"[Node 1] Started {NUM_WORKERS} task workers!"
+    )
 
     try:
+
         async with server:
+
             await server.serve_forever()
 
     finally:
-        worker.cancel()
 
-        try:
-            await worker
-        except asyncio.CancelledError:
-            pass
+        for worker in workers:
+            worker.cancel()
+
+        await asyncio.gather(
+            *workers,
+            return_exceptions=True
+        )
 
 
+# Client sends tasks to server
 async def start_client():
-    """Start Node 2 as a TCP client."""
 
     print("[Node 2] Connecting to Node 1...")
 
@@ -161,56 +205,76 @@ async def start_client():
 
     print("[Node 2] Connected successfully!")
 
+    task_count = 5
+
     try:
 
-        messages = [
-            ("TASK", "Task Request 1"),
-            ("TASK", "Task Request 2"),
-            ("TASK", "Task Request 3"),
-            ("PING", "Check connection")
-        ]
-
-        for message_type, payload in messages:
+        # Send five tasks
+        for number in range(1, task_count + 1):
 
             message = create_message(
-                message_type,
+                "TASK",
                 "MeshWeaver-Node-2",
                 "MeshWeaver-Node-1",
-                payload
+                f"Task Request {number}"
             )
 
-            encoded_message = encode_message(message)
-
-            writer.write(encoded_message + b"\n")
+            writer.write(
+                encode_message(message) + b"\n"
+            )
 
             await writer.drain()
 
-            print(f"\n[Node 2] Message sent: {message_type}")
+            print(
+                f"[Node 2] Task sent: Task Request {number}"
+            )
 
-        for message_type, payload in messages:
+        # Send PING message
+        ping_message = create_message(
+            "PING",
+            "MeshWeaver-Node-2",
+            "MeshWeaver-Node-1",
+            "Check connection"
+        )
 
-            if message_type == "PING":
-                response_data = await reader.readline()
+        writer.write(
+            encode_message(ping_message) + b"\n"
+        )
 
-                if response_data:
-                    response = decode_message(response_data.strip())
+        await writer.drain()
 
-                    print(
-                        f"[Node 2] Response received: "
-                        f"{response['type']}"
-                    )
+        print("[Node 2] PING message sent!")
 
-                    print(f"[Node 2] {response['payload']}")
+        # Receive PONG response
+        response_data = await reader.readline()
 
-        for _ in range(3):
+        if response_data:
+
+            response = decode_message(
+                response_data.strip()
+            )
+
+            print(
+                f"[Node 2] Response received: "
+                f"{response['type']}"
+            )
+
+            print(f"[Node 2] {response['payload']}")
+
+        # Receive task completion responses
+        for _ in range(task_count):
 
             response_data = await reader.readline()
 
             if not response_data:
+
                 print("[Node 2] Server disconnected.")
+
                 break
 
-            response = decode_message(response_data.strip())
+            response = decode_message(
+                response_data.strip()
+            )
 
             print(
                 f"[Node 2] Response received: "
@@ -228,12 +292,15 @@ async def start_client():
     print("\n[Node 2] Communication completed!")
 
 
+# Main function
 async def main():
 
     if len(sys.argv) < 2:
 
         print("Usage:")
+
         print("python -m meshweaver.network_node server")
+
         print("python -m meshweaver.network_node client")
 
         return
@@ -256,10 +323,16 @@ async def main():
 if __name__ == "__main__":
 
     try:
+
         asyncio.run(main())
 
     except ConnectionRefusedError:
-        print("[Error] Server is not running. Start Node 1 first.")
+
+        print(
+            "[Error] Server is not running. "
+            "Start Node 1 first."
+        )
 
     except KeyboardInterrupt:
+
         print("\nMeshWeaver stopped.")
