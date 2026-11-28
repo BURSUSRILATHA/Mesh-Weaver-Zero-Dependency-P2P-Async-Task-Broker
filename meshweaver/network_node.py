@@ -3,121 +3,135 @@ import asyncio
 import sys
 import itertools
 
-from meshweaver.protocol import (
-    create_message,
-    encode_message,
-    decode_message
-)
-
 HOST = "127.0.0.1"
 PORT = 8888
 
 NUM_WORKERS = 3
 MAX_ATTEMPTS = 3
+TASK_TIMEOUT_SECONDS = 2
 
 task_queue = asyncio.PriorityQueue()
 task_counter = itertools.count()
 
 
 async def process_task(message, attempt):
-    payload = message["payload"]
+    payload = message.get("payload", "")
 
-    print(
-        f"\n[Worker] Processing: {payload} "
-        f"(Attempt {attempt}/{MAX_ATTEMPTS})"
-    )
+    print(f"[Node 1] Processing: {payload} (Attempt {attempt})")
 
-    await asyncio.sleep(1)
+    # Simulate a task that takes too long
+    if "Slow Task" in payload:
+        await asyncio.sleep(5)
 
-    # Demonstrate a task that succeeds after two retries.
-    if "Retry" in payload and attempt < 3:
-        raise RuntimeError("Temporary task error")
+    # Simulate a temporary error
+    elif "Retry Task" in payload and attempt < 3:
+        await asyncio.sleep(1)
+        raise Exception("Temporary task error")
 
-    # Demonstrate a task that always fails.
-    if "Always Fail" in payload:
-        raise RuntimeError("Permanent task error")
+    # Simulate a permanent error
+    elif "Always Fail" in payload:
+        await asyncio.sleep(1)
+        raise Exception("Permanent task error")
 
-    print(f"[Worker] Task completed: {payload}")
+    else:
+        await asyncio.sleep(1)
 
-    return create_message(
-        "TASK_COMPLETED",
-        "MeshWeaver-Node-1",
-        message["sender"],
-        f"{payload} completed successfully"
-    )
-
-
-async def send_response(writer, response):
-    try:
-        writer.write(encode_message(response) + b"\n")
-        await writer.drain()
-    except (ConnectionError, OSError) as error:
-        print(f"[Node 1] Could not send response: {error}")
+    return {
+        "type": "TASK_COMPLETED",
+        "payload": f"{payload} completed successfully"
+    }
 
 
 async def task_worker(worker_id):
     print(f"[Worker {worker_id}] Worker started!")
 
     while True:
-        priority, count, message, writer, attempt = (
-            await task_queue.get()
-        )
+        priority, order, message, writer, attempt = await task_queue.get()
+
+        payload = message.get("payload", "")
 
         try:
             print(
-                f"[Worker {worker_id}] Picked up: "
-                f"{message['payload']}"
+                f"[Worker {worker_id}] "
+                f"Picked up {payload} (Attempt {attempt})"
             )
 
-            try:
-                response = await process_task(message, attempt)
+            response = await asyncio.wait_for(
+                process_task(message, attempt),
+                timeout=TASK_TIMEOUT_SECONDS
+            )
 
-                await send_response(writer, response)
+            print(f"[Worker {worker_id}] {payload} completed!")
 
-            except Exception as error:
-                print(
-                    f"[Worker {worker_id}] Task failed: {error}"
+        except asyncio.TimeoutError:
+            print(
+                f"[Worker {worker_id}] {payload} timed out "
+                f"on attempt {attempt}"
+            )
+
+            if attempt < MAX_ATTEMPTS:
+                await task_queue.put(
+                    (
+                        priority,
+                        next(task_counter),
+                        message,
+                        writer,
+                        attempt + 1
+                    )
                 )
-
-                if attempt < MAX_ATTEMPTS:
-                    print(
-                        f"[Worker {worker_id}] Retrying task... "
-                        f"({attempt + 1}/{MAX_ATTEMPTS})"
-                    )
-
-                    await task_queue.put(
-                        (
-                            priority,
-                            next(task_counter),
-                            message,
-                            writer,
-                            attempt + 1
-                        )
-                    )
-
-                else:
-                    print(
-                        f"[Worker {worker_id}] Maximum attempts reached!"
-                    )
-
-                    failure_response = create_message(
-                        "TASK_FAILED",
-                        "MeshWeaver-Node-1",
-                        message["sender"],
-                        f"{message['payload']} failed after "
+                print(f"[Worker {worker_id}] Requeued timed-out task")
+                response = None
+            else:
+                response = {
+                    "type": "TASK_TIMEOUT",
+                    "payload": (
+                        f"{payload} timed out after "
                         f"{MAX_ATTEMPTS} attempts"
                     )
+                }
 
-                    await send_response(writer, failure_response)
+        except Exception as error:
+            print(f"[Worker {worker_id}] Task failed: {error}")
 
-        finally:
-            task_queue.task_done()
+            if attempt < MAX_ATTEMPTS:
+                await task_queue.put(
+                    (
+                        priority,
+                        next(task_counter),
+                        message,
+                        writer,
+                        attempt + 1
+                    )
+                )
+                print(f"[Worker {worker_id}] Task requeued")
+                response = None
+            else:
+                response = {
+                    "type": "TASK_FAILED",
+                    "payload": (
+                        f"{payload} failed after "
+                        f"{MAX_ATTEMPTS} attempts"
+                    )
+                }
+
+        if response is not None:
+            try:
+                import json
+                writer.write(
+                    (json.dumps(response) + "\n").encode()
+                )
+                await writer.drain()
+            except (ConnectionError, OSError):
+                print("[Worker] Client disconnected before response")
+
+        task_queue.task_done()
 
 
 async def handle_client(reader, writer):
-    address = writer.get_extra_info("peername")
+    import json
 
-    print(f"\n[Node 1] Node connected: {address}")
+    address = writer.get_extra_info("peername")
+    print(f"[Node 1] Connected to {address}")
 
     try:
         while True:
@@ -126,55 +140,46 @@ async def handle_client(reader, writer):
             if not data:
                 break
 
-            try:
-                message = decode_message(data.strip())
-                message_type = message["type"]
+            message = json.loads(data.decode())
+            message_type = message.get("type")
 
-                if message_type == "TASK":
-                    priority = message.get("priority", 3)
+            if message_type == "TASK":
+                priority = message.get("priority", 3)
 
-                    if (
-                        not isinstance(priority, int)
-                        or isinstance(priority, bool)
-                        or not 1 <= priority <= 5
-                    ):
-                        response = create_message(
-                            "TASK_FAILED",
-                            "MeshWeaver-Node-1",
-                            message["sender"],
-                            "Invalid priority. Use values from 1 to 5."
-                        )
-                        await send_response(writer, response)
-                        continue
+                if not isinstance(priority, int) or not 1 <= priority <= 5:
+                    response = {
+                        "type": "ERROR",
+                        "payload": "Priority must be between 1 and 5"
+                    }
+                    writer.write((json.dumps(response) + "\n").encode())
+                    await writer.drain()
+                    continue
 
-                    await task_queue.put(
-                        (
-                            priority,
-                            next(task_counter),
-                            message,
-                            writer,
-                            1
-                        )
+                await task_queue.put(
+                    (
+                        priority,
+                        next(task_counter),
+                        message,
+                        writer,
+                        1
                     )
+                )
 
-                    print(
-                        f"[Node 1] Task queued: "
-                        f"{message['payload']} "
-                        f"(Priority: {priority})"
-                    )
+                print(
+                    f"[Node 1] Task received: "
+                    f"{message.get('payload')} (Priority {priority})"
+                )
 
-                elif message_type == "PING":
-                    response = create_message(
-                        "PONG",
-                        "MeshWeaver-Node-1",
-                        message["sender"],
-                        "Connection is active"
-                    )
+            elif message_type == "PING":
+                response = {
+                    "type": "PONG",
+                    "payload": "Connection is active"
+                }
+                writer.write((json.dumps(response) + "\n").encode())
+                await writer.drain()
 
-                    await send_response(writer, response)
-
-            except (ValueError, KeyError, TypeError) as error:
-                print(f"[Node 1] Invalid message: {error}")
+    except (ConnectionError, OSError, json.JSONDecodeError) as error:
+        print(f"[Node 1] Client communication error: {error}")
 
     finally:
         writer.close()
@@ -183,107 +188,95 @@ async def handle_client(reader, writer):
 
 
 async def start_server():
+    workers = [
+        asyncio.create_task(task_worker(i))
+        for i in range(1, NUM_WORKERS + 1)
+    ]
+
     server = await asyncio.start_server(
         handle_client,
         HOST,
         PORT
     )
 
-    workers = [
-        asyncio.create_task(task_worker(i + 1))
-        for i in range(NUM_WORKERS)
-    ]
-
     print("\n[Node 1] MeshWeaver server started!")
     print(f"[Node 1] Listening on {HOST}:{PORT}")
-    print(f"[Node 1] Started {NUM_WORKERS} task workers!")
-    print(f"[Node 1] Maximum attempts per task: {MAX_ATTEMPTS}")
+    print(f"[Node 1] Started {NUM_WORKERS} workers!")
+    print(f"[Node 1] Task timeout: {TASK_TIMEOUT_SECONDS} seconds")
+    print(f"[Node 1] Maximum attempts: {MAX_ATTEMPTS}\n")
 
-    try:
-        async with server:
+    async with server:
+        try:
             await server.serve_forever()
-
-    finally:
-        for worker in workers:
-            worker.cancel()
-
-        await asyncio.gather(*workers, return_exceptions=True)
+        finally:
+            for worker in workers:
+                worker.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
 
 
 async def start_client():
+    import json
+
     print("[Node 2] Connecting to Node 1...")
 
     reader, writer = await asyncio.open_connection(HOST, PORT)
 
-    print("[Node 2] Connected successfully!")
+    print("[Node 2] Connected successfully!\n")
 
     tasks = [
         ("Normal Task", 3),
         ("Retry Task", 1),
-        ("Always Fail Task", 2)
+        ("Always Fail Task", 2),
+        ("Slow Task", 1)
     ]
 
     for payload, priority in tasks:
-        message = create_message(
-            "TASK",
-            "MeshWeaver-Node-2",
-            "MeshWeaver-Node-1",
-            payload
-        )
+        message = {
+            "type": "TASK",
+            "payload": payload,
+            "priority": priority
+        }
 
-        message["priority"] = priority
-
-        writer.write(encode_message(message) + b"\n")
+        writer.write((json.dumps(message) + "\n").encode())
         await writer.drain()
 
-        print(
-            f"[Node 2] Task sent: {payload} "
-            f"(Priority: {priority})"
-        )
+        print(f"[Node 2] Task sent: {payload} (Priority {priority})")
 
-    ping = create_message(
-        "PING",
-        "MeshWeaver-Node-2",
-        "MeshWeaver-Node-1",
-        "Check connection"
-    )
-
-    writer.write(encode_message(ping) + b"\n")
+    ping = {"type": "PING"}
+    writer.write((json.dumps(ping) + "\n").encode())
     await writer.drain()
 
-    print("[Node 2] PING message sent!")
+    print("[Node 2] PING message sent!\n")
 
-    try:
-        response = decode_message(await reader.readline())
+    # Read the PONG response first
+    response = json.loads((await reader.readline()).decode())
+    print(f"[Node 2] Response received: {response['type']}")
+    print(response["payload"], "\n")
 
-        print(
-            f"[Node 2] Response received: {response['type']}"
-        )
-        print(f"[Node 2] {response['payload']}")
+    # Read one final response for each submitted task
+    for _ in tasks:
+        data = await reader.readline()
 
-        for _ in range(len(tasks)):
-            response = decode_message(await reader.readline())
+        if not data:
+            print("[Node 2] Connection closed unexpectedly")
+            break
 
-            print(
-                f"\n[Node 2] Response received: "
-                f"{response['type']}"
-            )
-            print(f"[Node 2] {response['payload']}")
+        response = json.loads(data.decode())
 
-    finally:
-        writer.close()
-        await writer.wait_closed()
+        print(f"[Node 2] Response received: {response['type']}")
+        print(response["payload"], "\n")
 
-    print("\n[Node 2] Communication completed!")
+    print("[Node 2] Communication completed!")
+
+    writer.close()
+    await writer.wait_closed()
 
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "server":
         asyncio.run(start_server())
-
     elif len(sys.argv) > 1 and sys.argv[1] == "client":
         asyncio.run(start_client())
-
     else:
         print("Usage:")
         print("python -m meshweaver.network_node server")
